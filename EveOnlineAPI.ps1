@@ -120,16 +120,49 @@ function Get-EveOnlineSystemInfo {
 function Find-EveOnlineSystemByCriteria {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true, Position=0)]
-        [string]$Property,           # e.g. "planets", "moons", "asteroid_belts", "stations", "stargates", "name"
-        [Parameter(Mandatory=$true, Position=1)]
+        [Parameter(Mandatory=$false, Position=0)]
+        [string]$Filter,             # e.g. "planets -gt 5, security_status -ge 0.5, name -eq Jita"
+        [Parameter(Mandatory=$false)]
+        [string]$Property,
+        [Parameter(Mandatory=$false)]
         [ValidateSet('-eq','-ne','-gt','-ge','-lt','-le')]
-        [string]$Operator,           # e.g. "-gt", "-eq"
-        [Parameter(Mandatory=$true, Position=2)]
-        [object]$Value,              # e.g. 1, 2, 5, or a string for name
-        [switch]$CompleteAllJobs     # Optional: if set, returns all matches, otherwise stops on first match
+        [string]$Operator,
+        [Parameter(Mandatory=$false)]
+        [object]$Value,
+        [switch]$CompleteAllJobs
     )
-    Write-Host "[INFO] Searching for systems where '$Property' $Operator $Value..." -ForegroundColor Yellow
+    # Parse filters into an array of criteria
+    $criteria = @()
+    if ($Filter) {
+        $filterParts = $Filter -split '\s*,\s*'
+        foreach ($f in $filterParts) {
+            if ($f -match '^\s*(\w+)\s+(-eq|-ne|-gt|-ge|-lt|-le)\s+(.+)$') {
+                $crit = [PSCustomObject]@{
+                    Property = $matches[1]
+                    Operator = $matches[2]
+                    Value    = $matches[3].Trim('"').Trim("'")
+                }
+                # Try to convert Value to int or double if possible
+                if ($crit.Value -match '^\d+$') { $crit.Value = [int]$crit.Value }
+                elseif ($crit.Value -match '^\d+\.\d+$') { $crit.Value = [double]$crit.Value }
+                $criteria += $crit
+            } else {
+                Write-Warning "Filter string format invalid: '$f'. Use: <property> <operator> <value> (e.g. 'planets -gt 5')"
+                return $null
+            }
+        }
+    } elseif ($Property -and $Operator -and $null -ne $Value) {
+        $criteria += [PSCustomObject]@{
+            Property = $Property
+            Operator = $Operator
+            Value    = $Value
+        }
+    } else {
+        Write-Warning "You must specify either -Filter or all of -Property, -Operator, and -Value."
+        return $null
+    }
+
+    Write-Host "[INFO] Searching for systems matching all filter criteria..." -ForegroundColor Yellow
     $systems = Get-EveOnlineSystemInfo
     if (-not $systems) {
         Write-Warning "No systems found to search."
@@ -137,49 +170,54 @@ function Find-EveOnlineSystemByCriteria {
     }
     $results = @()
     foreach ($system in $systems) {
-        switch ($Property.ToLower()) {
-            'planets' {
-                $count = if ($system.planets) { $system.planets.Count } else { 0 }
-                if (Invoke-Expression "$count $Operator $Value") { $results += $system; if (-not $CompleteAllJobs) { return $system } }
-            }
-            'moons' {
-                $count = 0
-                if ($system.planets) {
-                    foreach ($planet in $system.planets) {
-                        if ($planet.moons) { $count += $planet.moons.Count }
+        $match = $true
+        foreach ($crit in $criteria) {
+            switch ($crit.Property.ToLower()) {
+                'planets' {
+                    $count = if ($system.planets) { $system.planets.Count } else { 0 }
+                    if (-not (Invoke-Expression "$count $($crit.Operator) $($crit.Value)")) { $match = $false }
+                }
+                'moons' {
+                    $count = 0
+                    if ($system.planets) {
+                        foreach ($planet in $system.planets) {
+                            if ($planet.moons) { $count += $planet.moons.Count }
+                        }
                     }
+                    if (-not (Invoke-Expression "$count $($crit.Operator) $($crit.Value)")) { $match = $false }
                 }
-                if (Invoke-Expression "$count $Operator $Value") { $results += $system; if (-not $CompleteAllJobs) { return $system } }
-            }
-            'asteroid_belts' {
-                $count = 0
-                if ($system.planets) {
-                    foreach ($planet in $system.planets) {
-                        if ($planet.asteroid_belts) { $count += $planet.asteroid_belts.Count }
+                'asteroid_belts' {
+                    $count = 0 
+                    if ($system.planets) {
+                        foreach ($planet in $system.planets) {
+                            if ($planet.asteroid_belts) { $count += $planet.asteroid_belts.Count }
+                        }
                     }
+                    if (-not (Invoke-Expression "$count $($crit.Operator) $($crit.Value)")) { $match = $false }
                 }
-                if (Invoke-Expression "$count $Operator $Value") { $results += $system; if (-not $CompleteAllJobs) { return $system } }
-            }
-            'stations' {
-                $count = if ($system.stations) { $system.stations.Count } else { 0 }
-                if (Invoke-Expression "$count $Operator $Value") { $results += $system; if (-not $CompleteAllJobs) { return $system } }
-            }
-            'stargates' {
-                $count = if ($system.stargates) { $system.stargates.Count } else { 0 }
-                if (Invoke-Expression "$count $Operator $Value") { $results += $system; if (-not $CompleteAllJobs) { return $system } }
-            }
-            'name' {
-                # Only support -eq and -ne for name
-                if ($Operator -eq '-eq' -and $system.name -and ($system.name.ToLower() -eq $Value.ToString().ToLower())) {
-                    $results += $system
-                    if (-not $CompleteAllJobs) { return $system }
+                'stations' {
+                    $count = if ($system.stations) { $system.stations.Count } else { 0 }
+                    if (-not (Invoke-Expression "$count $($crit.Operator) $($crit.Value)")) { $match = $false }
                 }
-                elseif ($Operator -eq '-ne' -and $system.name -and ($system.name.ToLower() -ne $Value.ToString().ToLower())) {
-                    $results += $system
-                    if (-not $CompleteAllJobs) { return $system }
+                'stargates' {
+                    $count = if ($system.stargates) { $system.stargates.Count } else { 0 }
+                    if (-not (Invoke-Expression "$count $($crit.Operator) $($crit.Value)")) { $match = $false }
                 }
+                'security_status' {
+                    $sec = if ($system.security_status) { [double]$system.security_status } else { 0 }
+                    if (-not (Invoke-Expression "$sec $($crit.Operator) $($crit.Value)")) { $match = $false }
+                }
+                'name' {
+                    if ($crit.Operator -eq '-eq' -and $system.name -and ($system.name.ToLower() -ne $crit.Value.ToString().ToLower())) { $match = $false }
+                    elseif ($crit.Operator -eq '-ne' -and $system.name -and ($system.name.ToLower() -eq $crit.Value.ToString().ToLower())) { $match = $false }
+                }
+                default { $match = $false }
             }
-            default { continue }
+            if (-not $match) { break }
+        }
+        if ($match) {
+            $results += $system
+            if (-not $CompleteAllJobs) { return $system }
         }
     }
     if ($results) {
