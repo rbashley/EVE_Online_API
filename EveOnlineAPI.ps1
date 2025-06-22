@@ -229,6 +229,69 @@ function Find-EveOnlineSystemByCriteria {
     }
 }
 
+function Get-EveSystemPath {
+    [CmdLetBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [object]$startingSystem, # The starting system name or ID
+        [Parameter(Mandatory=$true)]
+        [object]$destinationSystem, # The destination system name or ID
+        [switch]$StringNames        # If set, return system names instead of IDs
+    )
+    Write-Host "[INFO] Retrieving path from $startingSystem to $destinationSystem..." -ForegroundColor Yellow
+    $systemsInfo = Get-EveOnlineSystemInfo
+
+    $startingSystemId = if ($startingSystem -is [int]) { 
+        $startingSystem 
+    } elseif ($startingSystem -is [string]) {
+        ($systemsInfo | Where-Object { $_.name -eq $startingSystem }).system_id
+    } else {
+        Write-Warning "Invalid starting system type. Must be int or string."
+        return $null
+    }
+
+    $destinationSystemId = if ($destinationSystem -is [int]) { 
+        $destinationSystem 
+    } elseif ($destinationSystem -is [string]) {
+        ($systemsInfo | Where-Object { $_.name -eq $destinationSystem }).system_id
+    } else {
+        Write-Warning "Invalid destination system type. Must be int or string."
+        return $null
+    }
+
+    if (-not $startingSystemId -or -not $destinationSystemId) {
+        Write-Warning "Could not resolve system IDs for one or both systems."
+        return $null
+    }
+    $uri = "https://esi.evetech.net/dev/route/$startingSystemId/$destinationSystemId/?datasource=tranquility"
+    try {
+        $response = Invoke-RestMethod -Uri $uri -Method Get
+        if ($response -and $response.Count -gt 0) {
+            Write-Host "[INFO] Successfully retrieved path." -ForegroundColor Yellow
+            if ($StringNames) {
+                $listIndex = 1;
+                # Map IDs to names
+                $idToName = @{
+                }
+                foreach ($sys in $systemsInfo) { $idToName[$sys.system_id] = $sys.name }
+                $response | ForEach-Object { 
+                    $sysName = $idToName[$_]
+                    Write-Host "$listIndex. $sysName"
+                    $listIndex++
+                }
+            } else {
+                return $response
+            }
+        } else {
+            Write-Warning "No route found between $startingSystem and $destinationSystem."
+            return $null
+        }
+    } catch {
+        Write-Error "Failed to retrieve route: $_"
+        return $null
+    }
+}
+
 # Runs script blocks as jobs asynchronously, with option to cancel others on first result or let all complete
 function Invoke-EveAsyncJobs {
     [CmdletBinding()]
